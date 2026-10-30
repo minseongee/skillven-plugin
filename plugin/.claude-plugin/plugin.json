@@ -1,0 +1,31 @@
+{
+  "name": "skillven",
+  "displayName": "Skillven",
+  "version": "0.4.0",
+  "description": "Lets Claude find security-reviewed skills and step-by-step workflows when a task needs one, and installs them after you approve. Install one from skillven.com with /skillven:install. Workflow runs are reviewed anonymously (fixed choices plus a one-line note, never your request or project); turn that off with report_workflow_outcomes.",
+  "author": {
+    "name": "minseongee"
+  },
+  "homepage": "https://skillven.com",
+  "repository": "https://github.com/minseongee/skillven-plugin",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "discovery",
+    "security"
+  ],
+  "userConfig": {
+    "api_url": {
+      "type": "string",
+      "title": "Skillven API URL",
+      "description": "Where anonymous usage counts (installed, helpful) and workflow run reviews go. Searches run on your machine and are never sent.",
+      "default": "https://api.skillven.com"
+    },
+    "report_workflow_outcomes": {
+      "type": "boolean",
+      "title": "Report workflow outcomes",
+      "description": "After a Skillven workflow runs, send an anonymous review: whether it finished, how each step went, how satisfied you seemed, and a one-line note about the workflow. Never your request, code or project details.",
+      "default": true
+    }
+  }
+}

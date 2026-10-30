@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "skillven": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/mcp/index.js"
+      ],
+      "env": {
+        "SKILLVEN_PLUGIN_API_URL": "${user_config.api_url}",
+        "SKILLVEN_PLUGIN_REPORT_WORKFLOWS": "${user_config.report_workflow_outcomes}"
+      }
+    }
+  }
+}
