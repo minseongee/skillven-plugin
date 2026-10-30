@@ -8,12 +8,22 @@ Browse everything at [skillven.com](https://skillven.com).
 
 ## Install
 
-In Claude Code:
+In Claude Code, run these two lines in order. The first adds this marketplace; without it
+`/plugin install` can't find skillven.
 
 ```
 /plugin marketplace add minseongee/skillven-plugin
 /plugin install skillven@skillven
 ```
+
+From a terminal:
+
+```bash
+claude plugin marketplace add minseongee/skillven-plugin && claude plugin install skillven@skillven
+```
+
+Other MCP clients can run the same server from npm (`npx -y skillven`); see
+[npmjs.com/package/skillven](https://www.npmjs.com/package/skillven).
 
 Then work as usual. When a task would go better with a skill, Claude searches Skillven and
 asks before installing anything. You can also ask directly:
@@ -56,12 +66,22 @@ repository.
 
 ### 설치
 
-Claude Code에서:
+Claude Code에서 두 줄을 순서대로 입력해요. 첫 줄이 이 마켓플레이스를 추가해요. 빼먹으면
+`/plugin install`이 skillven을 못 찾아요.
 
 ```
 /plugin marketplace add minseongee/skillven-plugin
 /plugin install skillven@skillven
 ```
+
+터미널에서는:
+
+```bash
+claude plugin marketplace add minseongee/skillven-plugin && claude plugin install skillven@skillven
+```
+
+다른 MCP 클라이언트에서는 npm으로 같은 서버를 쓸 수 있어요(`npx -y skillven`).
+[npmjs.com/package/skillven](https://www.npmjs.com/package/skillven)을 참고하세요.
 
 그다음은 평소처럼 일을 시키면 돼요. 스킬이 있으면 더 나은 작업이면 Claude가 Skillven에서 찾아보고,
 설치 전에 꼭 물어봐요. 직접 요청할 수도 있어요.
