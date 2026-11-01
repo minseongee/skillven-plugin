@@ -1,8 +1,8 @@
 {
   "name": "skillven",
   "displayName": "Skillven",
-  "version": "0.4.0",
-  "description": "Lets Claude find security-reviewed skills and step-by-step workflows when a task needs one, and installs them after you approve. Install one from skillven.com with /skillven:install. Workflow runs are reviewed anonymously (fixed choices plus a one-line note, never your request or project); turn that off with report_workflow_outcomes.",
+  "version": "0.5.0",
+  "description": "Lets Claude find security-reviewed skills and step-by-step workflows when a task needs one, and installs them after you approve. Install one, or a whole SkillList someone shared, from skillven.com with /skillven:install. Workflow runs are reviewed anonymously (fixed choices plus a one-line note, never your request or project); turn that off with report_workflow_outcomes.",
   "author": {
     "name": "minseongee"
   },

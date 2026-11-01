@@ -28628,6 +28628,7 @@ var CACHE_DIR = join(HOME, "cache");
 var OUTBOX_FILE = join(HOME, "outbox.jsonl");
 var RUNS_DIR = join(HOME, "runs");
 var SENT_REVIEWS_FILE = join(HOME, "sent-reviews.jsonl");
+var SKILL_LISTS_DIR = join(HOME, "lists");
 var REPORT_WORKFLOWS = (process.env.SKILLVEN_REPORT_WORKFLOWS ?? setting(process.env.SKILLVEN_PLUGIN_REPORT_WORKFLOWS) ?? "true") !== "false";
 function setting(value) {
   return value && !value.includes("${") ? value : void 0;
@@ -29057,6 +29058,16 @@ var IndexStore = class {
       return { workflow: detail, skills };
     });
   }
+  /** A skill list from the index. Its items are loaded with skill() and workflow(). */
+  async skillList(id) {
+    let entry = (await this.ready()).skillListsById.get(id);
+    if (!entry) {
+      await this.refresh();
+      entry = this.loaded.skillListsById.get(id);
+      if (!entry) throw new Error(`no SkillList with id ${id} in Skillven's index (a new one is listed within an hour)`);
+    }
+    return entry;
+  }
   /** Load what an index entry names. If that fails and a newer index names other files for
    * it, try those: publish deletes files no index has named for a week, so an index cached
    * longer may point at files that are gone. */
@@ -29195,6 +29206,7 @@ function parse3(manifest, indexBytes, modelBytes) {
     byId: new Map(data.entries.map((e) => [e.id, e])),
     workflows: new LocalIndex(workflows, int8(data.workflow_vectors ?? ""), data.dims),
     workflowsById: new Map(workflows.map((w) => [w.id, w])),
+    skillListsById: new Map((data.lists ?? []).map((p) => [p.id, p])),
     model: new StaticModel(modelBytes)
   };
 }
@@ -37529,6 +37541,11 @@ var EMPTY_COMPLETION_RESULT = {
 };
 
 // src/server.ts
+import { join as join8 } from "node:path";
+
+// src/skill-list.ts
+import { existsSync as existsSync3 } from "node:fs";
+import { mkdir as mkdir6, readdir as readdir6, readFile as readFile5, rename as rename5, rm as rm6, writeFile as writeFile6 } from "node:fs/promises";
 import { join as join7 } from "node:path";
 
 // src/workflow.ts
@@ -37585,7 +37602,7 @@ async function installWorkflow(workflow, skills, skillsDir, fetchRaw) {
   await swapIn(staging, target);
   return { dir: target, installed };
 }
-async function uninstallWorkflow(skillsDir, name) {
+async function uninstallWorkflow(skillsDir, name, keep = /* @__PURE__ */ new Set()) {
   const marker = await readWorkflowMarker(skillsDir, name);
   if (!marker) throw new Error(`no Skillven workflow named ${name}`);
   await rm5(join6(skillsDir, workflowDirName(name)), { recursive: true, force: true });
@@ -37597,7 +37614,7 @@ async function uninstallWorkflow(skillsDir, name) {
   }
   const removed = [workflowDirName(name)];
   for (const skill of marker.installed_skills) {
-    if (stillUsed.has(skill)) continue;
+    if (stillUsed.has(skill) || keep.has(skill)) continue;
     try {
       await uninstallSkill(skillsDir, skill);
       removed.push(dirNameFor(skill));
@@ -37641,6 +37658,131 @@ function orchestratorSkill(w) {
 }
 var oneLine = (text2) => text2.replace(/\s+/g, " ").trim();
 
+// src/skill-list.ts
+var itemName = (item) => item.type === "skill" ? item.skill.name : item.workflow.name;
+async function itemState(item, skillsDir) {
+  if (item.type === "workflow") {
+    const marker2 = await readWorkflowMarker(skillsDir, item.workflow.name);
+    if (marker2) return marker2.id === item.workflow.id ? "installed" : "conflict";
+    return existsSync3(join7(skillsDir, workflowDirName(item.workflow.name))) ? "conflict" : "new";
+  }
+  const dir = join7(skillsDir, dirNameFor(item.skill.name));
+  const marker = await readMarker(dir);
+  if (marker) return marker.id === item.skill.id ? "installed" : "conflict";
+  return existsSync3(dir) ? "conflict" : "new";
+}
+async function installSkillList(entry, items, states, skillsDir, recordsDir, fetchRaw) {
+  const previous = await readRecord(recordsDir, entry.id);
+  const result = { added: [], already: [], failed: [], stepSkills: [] };
+  const addedSkills = [];
+  const addedWorkflows = [];
+  for (const [i, item] of items.entries()) {
+    const name = itemName(item);
+    if (states[i] === "installed") {
+      result.already.push(item.type === "skill" ? name : `workflow ${name}`);
+      continue;
+    }
+    if (states[i] === "conflict") {
+      result.failed.push(`${name}: a different skill with that name is already installed`);
+      continue;
+    }
+    try {
+      if (item.type === "skill") {
+        await installSkill(item.skill, skillsDir, fetchRaw);
+        addedSkills.push(name);
+        result.added.push(name);
+      } else {
+        const { installed } = await installWorkflow(item.workflow, item.skills, skillsDir, fetchRaw);
+        addedWorkflows.push(name);
+        result.added.push(`workflow ${name}`);
+        result.stepSkills.push(...item.skills.filter((sk) => installed.includes(sk.name)));
+      }
+    } catch (e) {
+      result.failed.push(`${name}: ${e.message}`);
+    }
+  }
+  await writeRecord(recordsDir, {
+    id: entry.id,
+    title: entry.title,
+    owner: entry.owner,
+    installed_at: (/* @__PURE__ */ new Date()).toISOString(),
+    items: items.map((item) => ({
+      type: item.type,
+      id: item.type === "skill" ? item.skill.id : item.workflow.id,
+      name: itemName(item)
+    })),
+    added_skills: [.../* @__PURE__ */ new Set([...previous?.added_skills ?? [], ...addedSkills])],
+    added_workflows: [.../* @__PURE__ */ new Set([...previous?.added_workflows ?? [], ...addedWorkflows])]
+  });
+  return result;
+}
+async function uninstallSkillList(skillsDir, recordsDir, id) {
+  const record2 = await readRecord(recordsDir, id);
+  if (!record2) throw new Error(`no installed Skillven SkillList with id ${id}`);
+  const others = (await listRecords(recordsDir)).filter((r) => r.id !== id);
+  const listed = (type) => new Set(others.flatMap((r) => r.items.filter((i) => i.type === type).map((i) => i.name)));
+  const keepSkills = listed("skill");
+  const keepWorkflows = listed("workflow");
+  const removed = [];
+  const removedSkills = [];
+  const kept = [];
+  for (const name of record2.added_workflows) {
+    if (keepWorkflows.has(name)) {
+      kept.push(`workflow ${name}`);
+      continue;
+    }
+    if (!await readWorkflowMarker(skillsDir, name)) continue;
+    removed.push(...await uninstallWorkflow(skillsDir, name, keepSkills));
+  }
+  const steps = await stepSkillsInUse(skillsDir);
+  for (const name of record2.added_skills) {
+    if (keepSkills.has(name) || steps.has(name)) {
+      kept.push(name);
+      continue;
+    }
+    try {
+      await uninstallSkill(skillsDir, name);
+      removed.push(dirNameFor(name));
+      removedSkills.push(name);
+    } catch {
+    }
+  }
+  await rm6(recordPath(recordsDir, id), { force: true });
+  return { record: record2, removed, removedSkills, kept };
+}
+async function listRecords(recordsDir) {
+  const records = [];
+  for (const name of (await readdir6(recordsDir).catch(() => [])).sort()) {
+    const match = /^(\d+)\.json$/.exec(name);
+    const record2 = match && await readRecord(recordsDir, Number(match[1]));
+    if (record2) records.push(record2);
+  }
+  return records;
+}
+async function stepSkillsInUse(skillsDir) {
+  const used = /* @__PURE__ */ new Set();
+  for (const dir of await readdir6(skillsDir).catch(() => [])) {
+    const marker = await readMarker(join7(skillsDir, dir));
+    if (marker?.kind !== "workflow") continue;
+    for (const step of marker.workflow.steps) if (step.skill) used.add(step.skill.name);
+  }
+  return used;
+}
+var recordPath = (recordsDir, id) => join7(recordsDir, `${id}.json`);
+async function readRecord(recordsDir, id) {
+  try {
+    return JSON.parse(await readFile5(recordPath(recordsDir, id), "utf8"));
+  } catch {
+    return null;
+  }
+}
+async function writeRecord(recordsDir, record2) {
+  await mkdir6(recordsDir, { recursive: true });
+  const tmp = join7(recordsDir, `.${record2.id}.${process.pid}.tmp`);
+  await writeFile6(tmp, JSON.stringify(record2, null, 2));
+  await rename5(tmp, recordPath(recordsDir, record2.id));
+}
+
 // src/server.ts
 var text = (t, isError = false) => ({ content: [{ type: "text", text: t }], isError });
 var MAX_CHOICES = 3;
@@ -37655,9 +37797,10 @@ function notInstalled(approved, name) {
 }
 function createServer(options = {}) {
   const skillsDir = options.skillsDir ?? SKILLS_DIR;
+  const skillListsDir = options.skillListsDir ?? SKILL_LISTS_DIR;
   const store2 = options.store ?? new IndexStore(CDN_URL, CACHE_DIR, PUBLIC_KEY);
   const runs2 = options.runs ?? new RunStore(RUNS_DIR, SENT_REVIEWS_FILE, REPORT_WORKFLOWS);
-  const server = new McpServer({ name: "skillven", version: "0.4.0" });
+  const server = new McpServer({ name: "skillven", version: "0.5.0" });
   async function finishSkillInstall(skill) {
     try {
       const path = await installSkill(skill, skillsDir, options.fetchRaw);
@@ -37865,6 +38008,80 @@ function createServer(options = {}) {
     }
   );
   server.registerTool(
+    "install_list",
+    {
+      title: "Install SkillList",
+      description: "Install a Skillven SkillList: a list of skills and workflows someone shared on skillven.com for a kind of work. The user approves the whole list, with each item's security review, in one dialog. Items already installed are left as they are.",
+      inputSchema: { id: external_exports.number().int().describe("SkillList id from its skillven.com page") },
+      annotations: { destructiveHint: false, openWorldHint: true }
+    },
+    async ({ id }) => {
+      let entry;
+      try {
+        entry = await store2.skillList(id);
+      } catch (e) {
+        return text(`Could not load SkillList ${id}: ${e.message}`, true);
+      }
+      const loaded = await Promise.allSettled(entry.items.map(async ({ type, id: id2 }) => type === "skill" ? { type, skill: await store2.skill(id2) } : { type, ...await store2.workflow(id2) }));
+      const items = [];
+      const unavailable = [];
+      loaded.forEach((r, i) => {
+        if (r.status === "fulfilled") items.push(r.value);
+        else unavailable.push(`${entry.items[i].type} ${entry.items[i].id} (${r.reason.message})`);
+      });
+      const skipped = unavailable.length ? ` Not available: ${unavailable.join("; ")}.` : "";
+      if (!items.length) return text(`Nothing in SkillList ${id} can be installed.${skipped}`, true);
+      const states = await Promise.all(items.map((item) => itemState(item, skillsDir)));
+      const title = JSON.stringify(entry.title);
+      if (!states.includes("new")) {
+        const taken = items.filter((_, i) => states[i] === "conflict").map(itemName);
+        return text(
+          (taken.length ? `Nothing to install from SkillList ${title}: a different skill already has the name of ${taken.join(", ")}.` : `Everything in SkillList ${title} is already installed.`) + skipped,
+          taken.length > 0
+        );
+      }
+      const approved = await askSkillListApproval(server, entry, items, states, unavailable.length);
+      if (approved !== "accept") return text(notInstalled(approved, `SkillList ${title}`));
+      const done = await installSkillList(entry, items, states, skillsDir, skillListsDir, options.fetchRaw);
+      for (const item of items) {
+        if (item.type === "skill" && done.added.includes(item.skill.name)) await postEvent(item.skill.id, "installed");
+      }
+      for (const skill of done.stepSkills) await postEvent(skill.id, "installed");
+      const workflows = items.filter((item) => item.type === "workflow" && done.added.includes(`workflow ${itemName(item)}`));
+      return text(
+        `Installed SkillList ${title} (id ${id}).` + (done.added.length ? ` Added: ${done.added.join(", ")}.` : "") + (done.already.length ? ` Already installed: ${done.already.join(", ")}.` : "") + (done.failed.length ? ` Could not install: ${done.failed.join("; ")}.` : "") + skipped + (workflows.length ? ` To run a workflow, call start_workflow with its name (${workflows.map((w) => JSON.stringify(itemName(w))).join(", ")}).` : ""),
+        !done.added.length && !done.already.length
+      );
+    }
+  );
+  server.registerTool(
+    "uninstall_list",
+    {
+      title: "Uninstall SkillList",
+      description: "Remove what a Skillven SkillList installed. Skills and workflows that were already there before it, or that another installed SkillList lists, stay. Without an id, lists the installed SkillLists.",
+      inputSchema: { id: external_exports.number().int().optional().describe("The SkillList's id") },
+      annotations: { destructiveHint: true }
+    },
+    async ({ id }) => {
+      if (id === void 0) {
+        const records = await listRecords(skillListsDir);
+        if (!records.length) return text("No Skillven SkillLists are installed.");
+        return text(records.map((r) => `- id ${r.id}: ${JSON.stringify(r.title)} by ${r.owner} (${r.items.length} items)`).join("\n"));
+      }
+      try {
+        const { record: record2, removed, removedSkills, kept } = await uninstallSkillList(skillsDir, skillListsDir, id);
+        for (const item of record2.items) {
+          if (item.type === "skill" && removedSkills.includes(item.name)) await postEvent(item.id, "uninstalled");
+        }
+        return text(
+          `Removed SkillList ${JSON.stringify(record2.title)}` + (removed.length ? `: ${removed.join(", ")}` : " (it had added nothing that is still there)") + "." + (kept.length ? ` Kept, because another installed SkillList or workflow uses them: ${kept.join(", ")}.` : "")
+        );
+      } catch (e) {
+        return text(`Uninstall failed: ${e.message}`, true);
+      }
+    }
+  );
+  server.registerTool(
     "uninstall_skill",
     {
       title: "Uninstall skill",
@@ -37878,7 +38095,7 @@ function createServer(options = {}) {
           const removed2 = await uninstallWorkflow(skillsDir, name.replace(/^workflow-/, ""));
           return text(`Removed ${removed2.join(", ")}.`);
         }
-        const marker = await readMarker(join7(skillsDir, dirNameFor(name)));
+        const marker = await readMarker(join8(skillsDir, dirNameFor(name)));
         const removed = await uninstallSkill(skillsDir, name);
         if (marker) await postEvent(marker.id, "uninstalled");
         return text(`Removed ${removed}.`);
@@ -37899,7 +38116,7 @@ function createServer(options = {}) {
       annotations: { openWorldHint: true }
     },
     async ({ name, helpful }) => {
-      const marker = await readMarker(join7(skillsDir, dirNameFor(name)));
+      const marker = await readMarker(join8(skillsDir, dirNameFor(name)));
       if (!marker) return text(`${name} was not installed by Skillven; nothing to report.`);
       await postEvent(marker.id, helpful ? "helpful" : "not_helpful");
       return text("Thanks, recorded.");
@@ -37957,6 +38174,39 @@ async function askWorkflowApproval(server, workflow, skills) {
       return `${i + 1}. ${st.title ?? st.key}: ${skill.name} from ${origin(skill.repo)} ${flag}`;
     }),
     workflow.description.length > 160 ? `${workflow.description.slice(0, 157)}...` : workflow.description
+  ].join("\n");
+  try {
+    const result = await server.server.elicitInput({ mode: "form", message, requestedSchema: { type: "object", properties: {} } });
+    if (result.action === "cancel") return "cancel";
+    return result.action === "accept" ? "accept" : "decline";
+  } catch {
+    return "cancel";
+  }
+}
+async function askSkillListApproval(server, entry, items, states, unavailable) {
+  if (!server.server.getClientCapabilities()?.elicitation) return "unsupported";
+  const toInstall = items.filter((_, i) => states[i] === "new");
+  const cautions = toInstall.flatMap(
+    (item) => item.type === "skill" ? [item.skill.verdict] : [item.workflow.verdict, ...item.skills.map((sk) => sk.verdict)]
+  ).filter((v) => v !== "clean").length;
+  const already = states.filter((st) => st === "installed").length;
+  const message = [
+    `Install SkillList "${clip(entry.title, 80)}" by ${entry.owner}? (${toInstall.length} to install` + (already ? `, ${already} already installed` : "") + (unavailable ? `, ${unavailable} no longer listed` : "") + ")",
+    cautions ? `\u26A0 Security review: CAUTION on ${cautions} item(s)` : "\u2713 Security review: no issues found in any item",
+    ...items.map((item, i) => {
+      const n = `${i + 1}. `;
+      if (states[i] === "installed") return `${n}${itemName(item)} (already installed)`;
+      if (states[i] === "conflict") return `${n}${itemName(item)} (skipped: a different skill has that name here)`;
+      if (item.type === "skill") {
+        const sk = item.skill;
+        const flag = sk.verdict === "clean" ? "\u2713" : `\u26A0 ${sk.verdict_reasons[0]?.text ?? "caution"}`;
+        return `${n}${sk.name} (skill) from ${pinned(sk.repo, sk.commit_sha)} ${flag}`;
+      }
+      const { workflow: w, skills } = item;
+      const flagged = [w, ...skills].filter((x) => x.verdict !== "clean").length;
+      return `${n}${w.name} (workflow, ${w.steps.length} steps, ${skills.length} skills) from ${pinned(w.repo, w.commit_sha)} ${flagged ? `\u26A0 caution on ${flagged}` : "\u2713"}`;
+    }),
+    ...entry.description ? [clip(entry.description, 160)] : []
   ].join("\n");
   try {
     const result = await server.server.elicitInput({ mode: "form", message, requestedSchema: { type: "object", properties: {} } });

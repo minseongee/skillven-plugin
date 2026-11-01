@@ -12,7 +12,7 @@
       "name": "skillven",
       "source": "./plugin",
       "description": "Lets Claude find security-reviewed skills and step-by-step workflows when a task needs one, and installs them after you approve.",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "homepage": "https://skillven.com",
       "license": "MIT",
       "category": "productivity",

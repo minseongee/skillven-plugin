@@ -28,6 +28,8 @@ asks before installing anything. You can also ask directly:
 - `/skillven:find extract tables from PDFs`: search and pick
 - `/skillven:install skill 123`: install the one you chose on skillven.com (each page has
   its command to copy)
+- `/skillven:install list 8`: install a whole SkillList someone shared on skillven.com,
+  after one approval that shows every item's review
 
 ## What it does
 
@@ -82,6 +84,7 @@ claude plugin marketplace add minseongee/skillven-plugin && claude plugin instal
 
 - `/skillven:find PDF에서 표 뽑기`: 찾아서 고르기
 - `/skillven:install skill 123`: skillven.com에서 고른 스킬 설치하기 (페이지마다 복사할 명령이 있어요)
+- `/skillven:install list 8`: 다른 사람이 skillven.com에 공유한 스킬리스트를 통째로 설치하기 (항목마다 검토 결과를 보여 주는 승인 창 한 번이면 돼요)
 
 ### 하는 일
 
