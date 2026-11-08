@@ -37793,8 +37793,13 @@ function hookSetupNote(skills) {
   const which = names.length === 1 ? `${names[0]} registers` : `${names.join(", ")} register`;
   return ` Setup needed: ${which} a Claude Code hook, which installing the files does not do, so ${names.length === 1 ? "it does" : "they do"} nothing yet. Tell the user and ask whether to set it up now; if they agree, follow the setup steps in its SKILL.md (Claude Code asks before each settings change).`;
 }
+var AUTO_ANSWER_MS = 300;
 var choiceName = (c) => c.type === "skill" ? c.skill.name : `workflow ${c.workflow.name}`;
-function notInstalled(approved, name) {
+var choiceCommand = (c) => c.type === "skill" ? `/skillven:install skill ${c.skill.id}` : `/skillven:install workflow ${c.workflow.id}`;
+function notInstalled(approved, name, commands = []) {
+  if (approved === "unshown") {
+    return "Not installed: the approval dialog did not appear, because this client answered it automatically (the Claude desktop app does this), so the user did not decide. Tell the user that installing from Skillven needs its approval dialog, which Claude Code shows in a terminal" + (commands.length ? `: they can run \`claude\` there and use ${commands.map((c) => `\`${c}\``).join(" or ")}` : "") + ". Don't retry here; continue without it.";
+  }
   const why = {
     unsupported: "this client cannot show Skillven's approval dialog, so installs are disabled here",
     cancel: "the approval dialog was dismissed or could not be shown (e.g. a non-interactive session); the user did not decide",
@@ -37807,7 +37812,8 @@ function createServer(options = {}) {
   const skillListsDir = options.skillListsDir ?? SKILL_LISTS_DIR;
   const store2 = options.store ?? new IndexStore(CDN_URL, CACHE_DIR, PUBLIC_KEY);
   const runs2 = options.runs ?? new RunStore(RUNS_DIR, SENT_REVIEWS_FILE, REPORT_WORKFLOWS);
-  const server = new McpServer({ name: "skillven", version: "0.6.0" });
+  const autoMs = options.autoAnswerMs ?? AUTO_ANSWER_MS;
+  const server = new McpServer({ name: "skillven", version: "0.6.1" });
   async function finishSkillInstall(skill) {
     try {
       const path = await installSkill(skill, skillsDir, options.fetchRaw);
@@ -37887,8 +37893,8 @@ function createServer(options = {}) {
       } catch (e) {
         return text(`Could not load workflow ${id}: ${e.message}`, true);
       }
-      const approved = await askWorkflowApproval(server, workflow, skills);
-      if (approved !== "accept") return text(notInstalled(approved, workflow.name));
+      const approved = await askWorkflowApproval(server, workflow, skills, autoMs);
+      if (approved !== "accept") return text(notInstalled(approved, workflow.name, [`/skillven:install workflow ${id}`]));
       return finishWorkflowInstall(workflow, skills);
     }
   );
@@ -37965,10 +37971,10 @@ function createServer(options = {}) {
       } catch (e) {
         return text(`Could not load skill ${id}: ${e.message}`, true);
       }
-      const approved = await askApproval(server, skill);
+      const approved = await askApproval(server, skill, autoMs);
       if (approved === "decline") await postEvent(skill.id, "declined");
       if (approved === "cancel") await postEvent(skill.id, "dismissed");
-      if (approved !== "accept") return text(notInstalled(approved, skill.name));
+      if (approved !== "accept") return text(notInstalled(approved, skill.name, [`/skillven:install skill ${id}`]));
       return finishSkillInstall(skill);
     }
   );
@@ -37997,8 +38003,10 @@ function createServer(options = {}) {
       if (!choices.length) return text(failed.join("\n"), true);
       const skipped = failed.length ? `
 (${failed.join("; ")})` : "";
-      const picked = await askChoice(server, choices);
-      if (picked === "unsupported") return text(notInstalled(picked, "") + skipped);
+      const picked = await askChoice(server, choices, autoMs);
+      if (picked === "unsupported" || picked === "unshown") {
+        return text(notInstalled(picked, "", choices.map(choiceCommand)) + skipped);
+      }
       if (picked === "cancel" || picked === "none") {
         const event = picked === "cancel" ? "dismissed" : "declined";
         for (const c of choices) if (c.type === "skill") await postEvent(c.skill.id, event);
@@ -38047,8 +38055,8 @@ function createServer(options = {}) {
           taken.length > 0
         );
       }
-      const approved = await askSkillListApproval(server, entry, items, states, unavailable.length);
-      if (approved !== "accept") return text(notInstalled(approved, `SkillList ${title}`));
+      const approved = await askSkillListApproval(server, entry, items, states, unavailable.length, autoMs);
+      if (approved !== "accept") return text(notInstalled(approved, `SkillList ${title}`, [`/skillven:install list ${id}`]));
       const done = await installSkillList(entry, items, states, skillsDir, skillListsDir, options.fetchRaw);
       for (const item of items) {
         if (item.type === "skill" && done.added.includes(item.skill.name)) await postEvent(item.skill.id, "installed");
@@ -38134,7 +38142,21 @@ function createServer(options = {}) {
   );
   return server;
 }
-async function askApproval(server, skill) {
+async function elicit(server, message, requestedSchema, autoMs) {
+  const started = Date.now();
+  try {
+    const result = await server.server.elicitInput({ mode: "form", message, requestedSchema });
+    if (result.action === "accept") return { action: "accept", content: result.content };
+    if (Date.now() - started < autoMs) return { action: "unshown" };
+    return { action: result.action === "cancel" ? "cancel" : "decline" };
+  } catch {
+    return { action: "cancel" };
+  }
+}
+async function confirm(server, message, autoMs) {
+  return (await elicit(server, message, { type: "object", properties: {} }, autoMs)).action;
+}
+async function askApproval(server, skill, autoMs) {
   if (!server.server.getClientCapabilities()?.elicitation) return "unsupported";
   const caution = skill.verdict !== "clean";
   const message = [
@@ -38144,19 +38166,7 @@ async function askApproval(server, skill) {
     ...skill.hook_setup ? [HOOK_FLAG] : [],
     skill.description.length > 160 ? `${skill.description.slice(0, 157)}...` : skill.description
   ].join("\n");
-  try {
-    const result = await server.server.elicitInput({
-      mode: "form",
-      message,
-      // No fields: the Accept and Decline buttons are the whole decision. (A checkbox here
-      // only added a second step that users missed, turning Accept into a decline.)
-      requestedSchema: { type: "object", properties: {} }
-    });
-    if (result.action === "cancel") return "cancel";
-    return result.action === "accept" ? "accept" : "decline";
-  } catch {
-    return "cancel";
-  }
+  return confirm(server, message, autoMs);
 }
 function describeWorkflow(w) {
   const r = w.reviews;
@@ -38170,7 +38180,7 @@ function describeWorkflow(w) {
   }
   return lines.join("\n");
 }
-async function askWorkflowApproval(server, workflow, skills) {
+async function askWorkflowApproval(server, workflow, skills, autoMs) {
   if (!server.server.getClientCapabilities()?.elicitation) return "unsupported";
   const byId = new Map(skills.map((sk) => [sk.id, sk]));
   const cautions = [workflow.verdict, ...skills.map((sk) => sk.verdict)].filter((v) => v !== "clean").length;
@@ -38186,15 +38196,9 @@ async function askWorkflowApproval(server, workflow, skills) {
     }),
     workflow.description.length > 160 ? `${workflow.description.slice(0, 157)}...` : workflow.description
   ].join("\n");
-  try {
-    const result = await server.server.elicitInput({ mode: "form", message, requestedSchema: { type: "object", properties: {} } });
-    if (result.action === "cancel") return "cancel";
-    return result.action === "accept" ? "accept" : "decline";
-  } catch {
-    return "cancel";
-  }
+  return confirm(server, message, autoMs);
 }
-async function askSkillListApproval(server, entry, items, states, unavailable) {
+async function askSkillListApproval(server, entry, items, states, unavailable, autoMs) {
   if (!server.server.getClientCapabilities()?.elicitation) return "unsupported";
   const toInstall = items.filter((_, i) => states[i] === "new");
   const cautions = toInstall.flatMap(
@@ -38220,18 +38224,12 @@ async function askSkillListApproval(server, entry, items, states, unavailable) {
     }),
     ...entry.description ? [clip(entry.description, 160)] : []
   ].join("\n");
-  try {
-    const result = await server.server.elicitInput({ mode: "form", message, requestedSchema: { type: "object", properties: {} } });
-    if (result.action === "cancel") return "cancel";
-    return result.action === "accept" ? "accept" : "decline";
-  } catch {
-    return "cancel";
-  }
+  return confirm(server, message, autoMs);
 }
-async function askChoice(server, choices) {
+async function askChoice(server, choices, autoMs) {
   if (choices.length === 1) {
     const c = choices[0];
-    const approved = c.type === "skill" ? await askApproval(server, c.skill) : await askWorkflowApproval(server, c.workflow, c.skills);
+    const approved = c.type === "skill" ? await askApproval(server, c.skill, autoMs) : await askWorkflowApproval(server, c.workflow, c.skills, autoMs);
     return approved === "accept" ? 0 : approved === "decline" ? "none" : approved;
   }
   if (!server.server.getClientCapabilities()?.elicitation) return "unsupported";
@@ -38263,26 +38261,18 @@ async function askChoice(server, choices) {
       ];
     })
   ].join("\n");
-  try {
-    const result = await server.server.elicitInput({
-      mode: "form",
-      message,
-      requestedSchema: {
-        type: "object",
-        properties: {
-          choice: { type: "string", title: "Install", enum: [...labels, none], default: labels[0] }
-        },
-        required: ["choice"]
-      }
-    });
-    if (result.action === "cancel") return "cancel";
-    if (result.action === "decline") return "none";
-    const value = result.content?.choice ?? labels[0];
-    const index = labels.indexOf(String(value));
-    return index >= 0 ? index : "none";
-  } catch {
-    return "cancel";
-  }
+  const result = await elicit(server, message, {
+    type: "object",
+    properties: {
+      choice: { type: "string", title: "Install", enum: [...labels, none], default: labels[0] }
+    },
+    required: ["choice"]
+  }, autoMs);
+  if (result.action === "decline") return "none";
+  if (result.action !== "accept") return result.action;
+  const value = result.content?.choice ?? labels[0];
+  const index = labels.indexOf(String(value));
+  return index >= 0 ? index : "none";
 }
 var clip = (s, n) => s.length > n ? `${s.slice(0, n - 3)}...` : s;
 

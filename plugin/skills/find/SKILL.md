@@ -63,6 +63,8 @@ once per task; if nothing fits, carry on without a skill.
 4. If something installs, use it for the task right away; after installing a workflow,
    run it with `start_workflow`. If the user picks none, declines or the dialog could
    not be shown, continue without a skill and don't ask again for the same task.
+   If the result says the dialog did not appear (the Claude desktop app answers it on
+   its own), pass on the terminal command it gives in one sentence; don't retry here.
 5. When the task is done, call `report_outcome` with whether the skill helped.
 
 If the user ran /skillven:find without a clear need, ask what they want a skill for.

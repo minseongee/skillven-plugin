@@ -24,7 +24,8 @@ What to install: $ARGUMENTS
    accept. Don't search for it or suggest something else instead: they chose this one.
 3. Tell the user in one or two sentences what happened: installed (and where, or for a
    SkillList what was added and what was already there), declined, or why it couldn't be
-   installed (for example, it is no longer listed).
+   installed (for example, it is no longer listed, or the approval dialog did not appear
+   here: then give the terminal command from the result).
 4. After a workflow installs (on its own or in a SkillList), ask whether to run it now. If
    they say yes, call `start_workflow` with its name.
 
