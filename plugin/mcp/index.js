@@ -37786,6 +37786,13 @@ async function writeRecord(recordsDir, record2) {
 // src/server.ts
 var text = (t, isError = false) => ({ content: [{ type: "text", text: t }], isError });
 var MAX_CHOICES = 3;
+var HOOK_FLAG = "\u2699 needs a one-time setup after install (registers a Claude Code hook)";
+function hookSetupNote(skills) {
+  const names = [...new Set(skills.filter((sk) => sk.hook_setup).map((sk) => sk.name))];
+  if (!names.length) return "";
+  const which = names.length === 1 ? `${names[0]} registers` : `${names.join(", ")} register`;
+  return ` Setup needed: ${which} a Claude Code hook, which installing the files does not do, so ${names.length === 1 ? "it does" : "they do"} nothing yet. Tell the user and ask whether to set it up now; if they agree, follow the setup steps in its SKILL.md (Claude Code asks before each settings change).`;
+}
 var choiceName = (c) => c.type === "skill" ? c.skill.name : `workflow ${c.workflow.name}`;
 function notInstalled(approved, name) {
   const why = {
@@ -37800,13 +37807,13 @@ function createServer(options = {}) {
   const skillListsDir = options.skillListsDir ?? SKILL_LISTS_DIR;
   const store2 = options.store ?? new IndexStore(CDN_URL, CACHE_DIR, PUBLIC_KEY);
   const runs2 = options.runs ?? new RunStore(RUNS_DIR, SENT_REVIEWS_FILE, REPORT_WORKFLOWS);
-  const server = new McpServer({ name: "skillven", version: "0.5.0" });
+  const server = new McpServer({ name: "skillven", version: "0.6.0" });
   async function finishSkillInstall(skill) {
     try {
       const path = await installSkill(skill, skillsDir, options.fetchRaw);
       await postEvent(skill.id, "installed");
       return text(
-        `Installed ${skill.name} to ${path}. It is available now; use it for the user's request. When the task is done, call report_outcome with whether it helped.`
+        `Installed ${skill.name} to ${path}. It is available now; use it for the user's request. When the task is done, call report_outcome with whether it helped.` + hookSetupNote([skill])
       );
     } catch (e) {
       return text(`Install failed: ${e.message}`, true);
@@ -37820,7 +37827,7 @@ function createServer(options = {}) {
         if (skill) await postEvent(skill.id, "installed");
       }
       return text(
-        `Installed workflow ${workflow.name} (${workflow.steps.length} steps` + (installed.length ? `; added skills: ${installed.join(", ")}` : "") + `). To run it now, call start_workflow with name "${workflow.name}".`
+        `Installed workflow ${workflow.name} (${workflow.steps.length} steps` + (installed.length ? `; added skills: ${installed.join(", ")}` : "") + `). To run it now, call start_workflow with name "${workflow.name}".` + hookSetupNote(skills.filter((sk) => installed.includes(sk.name)))
       );
     } catch (e) {
       return text(`Install failed: ${e.message}`, true);
@@ -37852,7 +37859,7 @@ function createServer(options = {}) {
           return text("Nothing in Skillven's index matches this. Continue without a skill.");
         }
         const skillLines = results.map(
-          ({ entry: e }) => `- id ${e.id}: ${e.name} (security review: ${e.verdict}, ${origin(e.repo)}, ${e.stars} stars)
+          ({ entry: e }) => `- id ${e.id}: ${e.name} (security review: ${e.verdict}, ${origin(e.repo)}, ${e.stars} stars${e.hook_setup ? ", needs a one-time hook setup after install" : ""})
   ${e.description.slice(0, 300)}`
         );
         const workflowLines = workflows.length ? ["Workflows (step-by-step recipes for a longer task):", ...workflows.map(({ entry }) => describeWorkflow(entry))] : [];
@@ -38049,7 +38056,10 @@ function createServer(options = {}) {
       for (const skill of done.stepSkills) await postEvent(skill.id, "installed");
       const workflows = items.filter((item) => item.type === "workflow" && done.added.includes(`workflow ${itemName(item)}`));
       return text(
-        `Installed SkillList ${title} (id ${id}).` + (done.added.length ? ` Added: ${done.added.join(", ")}.` : "") + (done.already.length ? ` Already installed: ${done.already.join(", ")}.` : "") + (done.failed.length ? ` Could not install: ${done.failed.join("; ")}.` : "") + skipped + (workflows.length ? ` To run a workflow, call start_workflow with its name (${workflows.map((w) => JSON.stringify(itemName(w))).join(", ")}).` : ""),
+        `Installed SkillList ${title} (id ${id}).` + (done.added.length ? ` Added: ${done.added.join(", ")}.` : "") + (done.already.length ? ` Already installed: ${done.already.join(", ")}.` : "") + (done.failed.length ? ` Could not install: ${done.failed.join("; ")}.` : "") + skipped + (workflows.length ? ` To run a workflow, call start_workflow with its name (${workflows.map((w) => JSON.stringify(itemName(w))).join(", ")}).` : "") + hookSetupNote([
+          ...items.flatMap((item) => item.type === "skill" && done.added.includes(item.skill.name) ? [item.skill] : []),
+          ...done.stepSkills
+        ]),
         !done.added.length && !done.already.length
       );
     }
@@ -38131,6 +38141,7 @@ async function askApproval(server, skill) {
     `Install "${skill.name}" from ${pinned(skill.repo, skill.commit_sha)}?`,
     caution ? "\u26A0 Security review: CAUTION" : "\u2713 Security review: no issues found",
     ...caution ? skill.verdict_reasons.slice(0, 3).map((r) => `  \u2022 ${r.text}`) : [],
+    ...skill.hook_setup ? [HOOK_FLAG] : [],
     skill.description.length > 160 ? `${skill.description.slice(0, 157)}...` : skill.description
   ].join("\n");
   try {
@@ -38171,7 +38182,7 @@ async function askWorkflowApproval(server, workflow, skills) {
       const skill = st.skill ? byId.get(st.skill.id) : void 0;
       if (!skill) return `${i + 1}. ${st.title ?? st.key} (instructions only)`;
       const flag = skill.verdict === "clean" ? "\u2713" : `\u26A0 ${skill.verdict_reasons[0]?.text ?? "caution"}`;
-      return `${i + 1}. ${st.title ?? st.key}: ${skill.name} from ${origin(skill.repo)} ${flag}`;
+      return `${i + 1}. ${st.title ?? st.key}: ${skill.name} from ${origin(skill.repo)} ${flag}` + (skill.hook_setup ? ` \xB7 ${HOOK_FLAG}` : "");
     }),
     workflow.description.length > 160 ? `${workflow.description.slice(0, 157)}...` : workflow.description
   ].join("\n");
@@ -38200,11 +38211,12 @@ async function askSkillListApproval(server, entry, items, states, unavailable) {
       if (item.type === "skill") {
         const sk = item.skill;
         const flag = sk.verdict === "clean" ? "\u2713" : `\u26A0 ${sk.verdict_reasons[0]?.text ?? "caution"}`;
-        return `${n}${sk.name} (skill) from ${pinned(sk.repo, sk.commit_sha)} ${flag}`;
+        return `${n}${sk.name} (skill) from ${pinned(sk.repo, sk.commit_sha)} ${flag}` + (sk.hook_setup ? ` \xB7 ${HOOK_FLAG}` : "");
       }
       const { workflow: w, skills } = item;
       const flagged = [w, ...skills].filter((x) => x.verdict !== "clean").length;
-      return `${n}${w.name} (workflow, ${w.steps.length} steps, ${skills.length} skills) from ${pinned(w.repo, w.commit_sha)} ${flagged ? `\u26A0 caution on ${flagged}` : "\u2713"}`;
+      const hooks = skills.filter((sk) => sk.hook_setup).length;
+      return `${n}${w.name} (workflow, ${w.steps.length} steps, ${skills.length} skills) from ${pinned(w.repo, w.commit_sha)} ${flagged ? `\u26A0 caution on ${flagged}` : "\u2713"}` + (hooks ? ` \xB7 \u2699 ${hooks} skill(s) need a one-time hook setup after install` : "");
     }),
     ...entry.description ? [clip(entry.description, 160)] : []
   ].join("\n");
@@ -38233,7 +38245,11 @@ async function askChoice(server, choices) {
       if (c.type === "skill") {
         const sk = c.skill;
         const review2 = sk.verdict === "clean" ? "\u2713 no issues found" : `\u26A0 CAUTION: ${sk.verdict_reasons[0]?.text ?? "see review"}`;
-        return [`${labels[i]} from ${pinned(sk.repo, sk.commit_sha)} \xB7 ${review2}`, `   ${clip(sk.description, 120)}`];
+        return [
+          `${labels[i]} from ${pinned(sk.repo, sk.commit_sha)} \xB7 ${review2}`,
+          `   ${clip(sk.description, 120)}`,
+          ...sk.hook_setup ? [`   ${HOOK_FLAG}`] : []
+        ];
       }
       const { workflow: w, skills } = c;
       const cautions = [w.verdict, ...skills.map((sk) => sk.verdict)].filter((v) => v !== "clean").length;
